@@ -1,0 +1,286 @@
+*projectgen.nvim*                                   projectgen.nvim - New Project wizard
+
+CONTENTS                                          *projectgen.nvim-contents*
+
+  1. Introduction .................... |projectgen-introduction|
+  2. Installation .................... |projectgen-installation|
+  3. Usage ........................... |projectgen-usage|
+  4. The wizard ...................... |projectgen-wizard|
+  5. Keymaps ......................... |projectgen-keymaps|
+  6. Configuration ................... |projectgen-configuration|
+  7. How generation works ............ |projectgen-generation|
+  8. Testing ......................... |projectgen-testing|
+
+================================================================================
+INTRODUCTION                                       *projectgen-introduction*
+
+projectgen is an IntelliJ-style "New Project" wizard for Neovim. It is a single
+floating window with seven tabs:
+
+    Java          Maven project, release 21, JUnit 5 test, Maven wrapper
+    Spring Boot   Spring Boot project, entry class, @SpringBootTest, wrapper
+    Android       Gradle (kts) app module, manifest, Activity, layouts
+    Vanilla JS    plain HTML/CSS/JS with npm packages, no bundler
+    Vite          Vite app with optional React, Tailwind, vitest
+    React         Vite + React with component/test scaffolding
+    Next.js       Next.js App Router app with ESLint config
+
+You type the project name and package/group as ordinary text, tick the
+dependencies you want from a checklist, and press Create. Every tick becomes a
+real coordinate in the build file - a <dependency> in a pom.xml, a Gradle
+dependency, or an npm entry - so the generated project opens with its
+dependencies already resolved.
+
+The whole technique (offline-only templates, tracked npm versions, shared
+component list) comes from a few years of generating these projects by hand
+for coursework; everything the wizard can write, the wizard has already been
+verified to build. See |projectgen-generation| for the caveats.
+
+There is exactly one code path: each per-type command opens the SAME wizard on
+its own tab. There is no second, tab-less flow to go stale.
+
+Requirements:
+  - Neovim 0.9+ (user commands, floating windows, vim.opt).
+  - No third-party Neovim dependencies. The frontend tabs do not need a
+    bundler installed - `npm install` is printed, never run.
+  - To actually USE what Java/Spring/Android tabs generate you need JDK/Maven
+    or the Android SDK; the frontend tabs need Node/npm. The plugin itself
+    needs none of that.
+
+================================================================================
+INSTALLATION                                         *projectgen-installation*
+
+The plugin is available on GitHub as ihabau/projectgen.nvim
+<https://github.com/ihabau/projectgen.nvim>.
+
+lazy.nvim ~
+
+Add to your lazy setup:
+
+>lua
+  {
+    "ihabau/projectgen.nvim",
+    -- Commands are inert until run, so lazy-loading is safe.
+    cmd = { "NewProject", "NewJavaProject", "NewSpringBootProject",
+            "NewAndroidProject", "NewVanillaJSProject", "NewViteProject",
+            "NewReactProject", "NewNextJSProject" },
+  }
+<
+
+The plugin/projectgen.lua loader registers all eight commands when the plugin
+loads, so no config function is required.
+
+vim-plug ~
+
+>vim
+  Plug 'ihabau/projectgen.nvim'
+<
+
+mini.deps / packer / rodin etc. ~
+
+Any manager implements what lazy does here: clone the repository onto
+'runtimepath' and source plugin/projectgen.lua. With packer:
+
+>lua
+  use { "ihabau/projectgen.nvim" }
+<
+
+Manual (no manager) ~
+
+>vim
+  git clone https://github.com/ihabau/projectgen.nvim ~/.vim/pack/plugins/start/projectgen.nvim
+<
+
+================================================================================
+USAGE                                                    *projectgen-usage*
+
+Commands ~
+
+    :NewProject              open the wizard (Java tab)
+    :NewJavaProject          open it on the Java tab
+    :NewSpringBootProject    open it on the Spring Boot tab
+    :NewAndroidProject       open it on the Android tab
+    :NewVanillaJSProject     open it on the Vanilla JS tab
+    :NewViteProject          open it on the Vite tab
+    :NewReactProject         open it on the React tab
+    :NewNextJSProject        open it on the Next.js tab
+
+Every command submits to the same wizard and the same directory rules; the
+per-type commands only select the starting tab. A command ending in "JSProject"
+or "ViteProject" opened a directory that already contains a project - nothing
+is written and the wizard prints a warning (see |projectgen-generation|).
+
+The wizard runs entirely in the current working directory. If you want the
+project somewhere specific, :cd there first (or set a window-local directory
+with :lcd) before pressing Create.
+
+Empty checks ~
+
+The wizard never overwrites. If the target directory exists and is not empty,
+Create refuses and you get a |projectgen-errors| message instead of a silent
+wipe. This is deliberate and there is no --force.
+
+Aborting ~
+
+Press q or <Esc> to close the wizard without writing anything. Nothing is
+modified until Create is pressed, so closing at any earlier point is safe.
+
+================================================================================
+THE WIZARD                                               *projectgen-wizard*
+
+Layout ~
+
+    ╭───────────────────────────────────────────────────────────────╮
+    │ projectgen: new project                                (1-7)  │
+    │                                                               │
+    │  Project name   my-app                                        │
+    │  npm name       my-app                                        │
+    │                                                               │
+    │  Tabs: Java Spring Boot Android Vanilla JS Vite React Next.js │
+    │                                                               │
+    │  [x] Core                                             [x] ... │
+    │  [ ] Libraries                                          [ ] .. │
+    │  ...                                                          │
+    │                                                               │
+    │  a tick all | n clear all | g? help    Create   Abort         │
+    └───────────────────────────────────────────────────────────────┘
+
+The name, package/group and npm-name rows are ordinary buffer text - edit them
+with i/A/x exactly as you would any line. The checklist on the right is the
+important part: each ticked row becomes a dependency in the generated build
+file, or an import in the generated entry file.
+
+Keys ~
+
+    <Tab> / <S-Tab>       next / previous tab
+    digits 1..7           jump straight to a tab by number
+    g?                    show a key summary overlay
+    a                     tick every row on the current tab
+    n                     clear every row on the current tab
+    i / A / x             edit buffer fields like normal text
+    <CR> (Create)         generate the project
+    q / <Esc>             close without writing
+
+Deliberately unmapped: <Left>/<Right>/<Up>/<Down> and h/l stay as plain cursor
+motion - an IntelliJ checklist is navigated by Tab and number, not by arrow
+keys, and hijacking the arrows would make the form feel broken.
+
+Some rows depend on each other and are ticked automatically:
+
+    ts          <->  ... ticks nothing itself, but sees @types/... peers
+    eslint          implies nothing directly, but Next lint config needs it
+    @testing-library/react   implies  jsdom      (see the npm note below)
+
+The implied-row logic never lets a parent go off and leave an orphan: turning
+off @testing-library/react automatically clears jsdom if no other row implies
+it (|projectgen-generation|).
+
+================================================================================
+KEYMAPS                                                  *projectgen-keymaps*
+
+The plugin registers commands only; it does not bind keys. A convenient set
+for an AstroNvim/LazyVim-style config (Leader is space, p for "project"):
+
+>lua
+  local map = vim.keymap.set
+  map("n", "<Leader>pn", "<cmd>NewProject<CR>", { desc = "New project wizard" })
+  map("n", "<Leader>pv", "<cmd>NewJavaProject<CR>", { desc = "New Java project" })
+  map("n", "<Leader>ps", "<cmd>NewSpringBootProject<CR>", { desc = "New Spring project" })
+  map("n", "<Leader>pa", "<cmd>NewAndroidProject<CR>", { desc = "New Android project" })
+  map("n", "<Leader>pb", "<cmd>NewVanillaJSProject<CR>", { desc = "New vanilla JS project" })
+  map("n", "<Leader>pt", "<cmd>NewViteProject<CR>", { desc = "New Vite project" })
+  map("n", "<Leader>pr", "<cmd>NewReactProject<CR>", { desc = "New React project" })
+  map("n", "<Leader>px", "<cmd>NewNextJSProject<CR>", { desc = "New Next.js project" })
+<
+
+The letters after <Leader>p keep the obvious ones honest: pn is the wizard,
+pv is Plain Java - so vanilla JS becomes pb ("bare"), Vite becomes pt (viTe)
+and Next.js becomes px (neXt).
+
+================================================================================
+CONFIGURATION                                          *projectgen-configuration*
+
+There are no options. The plugin is deliberately configuration-free: the
+interesting decisions are made per-project inside the wizard, not at plugin
+load. The only knob is whether commands are registered at all:
+
+    require("projectgen").setup()
+
+M.setup() is what plugin/projectgen.lua calls. It is idempotent - calling it a
+second time (from your own config or a test) is harmless. If for some reason a
+config does NOT want the commands, it can leave the plugin/projectgen.lua
+loader in place and simply never mention it to lazy.nvim... but there is no
+supported way to suppress the plugin loader, and no good reason to.
+
+Nothing loads, generates, or writes at plugin load: the loader only registers
+inert commands. First interaction with the disk happens when you press Create.
+
+================================================================================
+HOW GENERATION WORKS                                   *projectgen-generation*
+
+The project templates and every dependency version live in
+lua/projectgen.lua, which is the single source of truth. The wizard:
+
+  1. resolves each ticked row against the shared npm catalogue
+  2. writes the project files (pom.xml / gradle scripts / package.json /
+     App.jsx / page.jsx / ...)
+  3. for frontend tabs prints:  cd <name> && npm install
+     - running npm is left to you: the wizard itself is fully offline.
+
+Key guarantees:
+
+  Offline by construction  - nothing network-facing is invoked.
+  Never overwrites         - an existing non-empty directory is refused.
+  Nothing at load time     - the first disk write is Create.
+  Outputs are verified     - the four frontend tabs are generated at maximum
+                              tick count, then npm-installed and built/tested
+                              for real. See |projectgen-testing|.
+
+Why some rows are absent on some tabs (security against npm, not style) ~
+
+  zustand                is a React hook (import { create } from "zustand"),
+                         so it is not offered on the vanilla or plain Vite
+                         tabs even though npm would install it there happily.
+  @testing-library/react is not on the Vite tab either: it peers react and
+                         react-dom NON-optionally, so npm silently installs a
+                         whole React tree into an app that has no React.
+  jquery                 is filtered out of the Next.js tab: Next prerenders
+                         even "use client" components, and jQuery's factory
+                         throws at import time without a window.
+
+These were found by running the generated projects, not by reading npm docs.
+
+================================================================================
+TESTING                                                  *projectgen-testing*
+
+test/ holds headless verification suites (written for nvim --headless, no
+test runner needed). Run each from the plugin root:
+
+>sh
+  nvim --headless -u test/init.lua -l test/pg_verify2.lua -c "qa!"
+  nvim --headless -u test/init.lua -l test/pg_verify3.lua -c "qa!"
+<
+
+pg_verify2  covers Java / Spring Boot / Android output (188 assertions).
+pg_verify3  covers the four frontend tabs: exact npm output, catalogue
+            hygiene, and the cross-framework compatibility rules above.
+pg_verify4  materialises each frontend tab at maximum tick count into
+            $TEMP/pgverify4, which you then hand-install and build:
+                cd $TEMP/pgverify4/all-vite && npm install && npm build
+            Each suite finishes with "ALL PASSED" and exit 0, or it prints
+            the failing assertions.
+
+================================================================================
+ERRORS                                                   *projectgen-errors*
+
+  projectgen: <path> already exists and is not empty - nothing written
+      The target directory is in the way. Choose another name, or move the
+      existing project; there is no --force and never will be.
+  projectgen: maven wrapper assets missing - skipped
+      lua/projectgen/wrapper/ was not installed with the plugin. Reinstall
+      rather than hand-copying projectgen.lua on its own.
+  E5600: No ... user command
+      The command was used before the plugin loaded (lazy-loading with cmd is
+      the fix - see |projectgen-installation|).
+
+vim:tw=78:ts=8:shiftwidth=2:ft=help:norl:
